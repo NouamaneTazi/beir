@@ -33,7 +33,7 @@ if importlib.util.find_spec("evaluate") is not None:
                 description="dummy metric to handle storing middle results",
                 citation="",
                 features=Features(
-                    {"cos_scores_top_k_values": Array2D((None, self.len_queries), "float32"), "cos_scores_top_k_idx": Array2D((None, self.len_queries), "int32"), "batch_index": Value("int32")},
+                    {"cos_scores_top_k_values": Array2D((None, self.len_queries), "float64"), "cos_scores_top_k_idx": Array2D((None, self.len_queries), "int32"), "batch_index": Value("int32")},
                 ),
             )
 
@@ -52,7 +52,7 @@ if importlib.util.find_spec("evaluate") is not None:
             """
             Add dummy batch to acquire filelocks for all processes and avoid getting errors
             """
-            self.add_batch(cos_scores_top_k_values=torch.ones((1, 1, self.len_queries), dtype=torch.float32), cos_scores_top_k_idx=torch.ones((1, 1, self.len_queries), dtype=torch.int32), batch_index=-torch.ones(1, dtype=torch.int32))
+            self.add_batch(cos_scores_top_k_values=torch.ones((1, 1, self.len_queries), dtype=torch.float64), cos_scores_top_k_idx=torch.ones((1, 1, self.len_queries), dtype=torch.int32), batch_index=-torch.ones(1, dtype=torch.int32))
 
 #Parent class for any dense model
 class DenseRetrievalParallelExactSearch:
@@ -120,7 +120,7 @@ class DenseRetrievalParallelExactSearch:
         query_embeddings = torch.cat(query_embeddings, dim=0)
 
         # copy the query embeddings to all target devices
-        self.query_embeddings = query_embeddings
+        self.query_embeddings = query_embeddings.to(torch.float64)
         self.top_k = top_k
         self.score_function = score_function
 
@@ -156,6 +156,14 @@ class DenseRetrievalParallelExactSearch:
         cos_scores_top_k_values = np.take_along_axis(cos_scores_top_k_values, sorted_idx, axis=0)
         cos_scores_top_k_idx = np.take_along_axis(cos_scores_top_k_idx, sorted_idx, axis=0)
 
+        import joblib
+        # joblib.dump(cos_scores_top_k_values, "cos_scores_top_k_values.pkl")
+        # joblib.dump(cos_scores_top_k_idx, "cos_scores_top_k_idx.pkl")
+        cos_scores_top_k_values_2 = joblib.load("cos_scores_top_k_values.pkl")
+        cos_scores_top_k_idx_2 = joblib.load("cos_scores_top_k_idx.pkl")
+
+        torch.testing.assert_allclose(cos_scores_top_k_values, cos_scores_top_k_values_2, rtol=0, atol=0)
+
         logger.info("Formatting results...")
         # Load corpus ids in memory
         query_ids = queries['id']
@@ -186,18 +194,37 @@ class DenseRetrievalParallelExactSearch:
                     id, batch_size, sentences = input_queue.get()
                     corpus_embeds = model.encode(
                         sentences, device=device, show_progress_bar=False, convert_to_tensor=True, batch_size=batch_size
-                    ).detach()
+                    ).detach().to(torch.float64)
 
                     cos_scores = self.score_functions[self.score_function](self.query_embeddings.to(corpus_embeds.device), corpus_embeds).detach()
                     cos_scores[torch.isnan(cos_scores)] = -1
 
-                    #Get top-k values
+                    #Get top-k most similar sentences for each query
                     cos_scores_top_k_values, cos_scores_top_k_idx = torch.topk(cos_scores, min(self.top_k+1, len(cos_scores[1])), dim=1, largest=True, sorted=False)
                     cos_scores_top_k_values = cos_scores_top_k_values.T.unsqueeze(0).detach()
                     cos_scores_top_k_idx = cos_scores_top_k_idx.T.unsqueeze(0).detach()
 
                     # Store results in an Apache Arrow table
                     metric.add_batch(cos_scores_top_k_values=cos_scores_top_k_values, cos_scores_top_k_idx=cos_scores_top_k_idx, batch_index=[id]*len(cos_scores_top_k_values))
+
+                    import joblib
+                    # joblib.dump(cos_scores_top_k_values, "cos_scores_top_k_values.pkl")
+                    # joblib.dump(cos_scores_top_k_idx, "cos_scores_top_k_idx.pkl")
+                    # joblib.dump(cos_scores, "cos_scores.pkl")
+                    # joblib.dump(corpus_embeds, "corpus_embeds.pkl")
+                    # joblib.dump(self.query_embeddings, "query_embeddings.pkl")
+
+                    cos_scores_top_k_idx_2 = joblib.load("cos_scores_top_k_idx.pkl")
+                    cos_scores_top_k_values_2 = joblib.load("cos_scores_top_k_values.pkl")
+                    cos_scores_2 = joblib.load("cos_scores.pkl")
+                    corpus_embeds_2 = joblib.load("corpus_embeds.pkl")
+                    query_embeddings_2 = joblib.load("query_embeddings.pkl")
+
+                    # torch.testing.assert_allclose(corpus_embeds[0], corpus_embeds_2[0], rtol=0, atol=0)
+                    # torch.testing.assert_allclose(query_embeddings_2[0], self.query_embeddings[0], rtol=0, atol=0)
+
+
+                    # cos_scores_0 = self.score_functions[self.score_function](self.query_embeddings[:1].to(corpus_embeds.device), corpus_embeds[:1]).detach()
 
                     # Alarm that process finished processing a batch
                     results_queue.put(None)

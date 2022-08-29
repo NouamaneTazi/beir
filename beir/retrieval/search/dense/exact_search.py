@@ -3,6 +3,7 @@ import logging
 import sys
 import torch
 from typing import Dict, List
+import heapq
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +72,26 @@ class DenseRetrievalExactSearch:
             cos_scores_top_k_idx = cos_scores_top_k_idx.cpu().tolist()
             
             for query_itr in range(len(query_embeddings)):
-                query_id = query_ids[query_itr]                  
-                for sub_corpus_id, score in zip(cos_scores_top_k_idx[query_itr], cos_scores_top_k_values[query_itr]):
-                    corpus_id = corpus_ids[corpus_start_idx+sub_corpus_id]
+                query_id = query_ids[query_itr]
+                for sub_corpus_id, score in zip(
+                    cos_scores_top_k_idx[query_itr], cos_scores_top_k_values[query_itr]
+                ):
+                    corpus_id = corpus_ids[corpus_start_idx + sub_corpus_id]
                     if corpus_id != query_id:
                         self.results[query_id][corpus_id] = score
-        
+
+                if batch_num > 0:
+                    # Muennighoff:
+                    # Reorder by top-K to reduce size of self.results saving memory
+                    # This is O(n log (k) and reduces self.results size to 1/(num_batches)
+                    k_keys_sorted_by_values = heapq.nlargest(
+                        min(top_k + 1, len(self.results[query_id])),
+                        self.results[query_id],
+                        key=self.results[query_id].get,
+                    )
+                    self.results[query_id] = {
+                        k: self.results[query_id][k] for k in k_keys_sorted_by_values
+                    }
+
         return self.results 
+
