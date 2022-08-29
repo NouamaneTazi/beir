@@ -148,7 +148,7 @@ class DenseRetrievalParallelExactSearch:
         metric.cache_file_name = os.path.join(metric.data_dir, f"{metric.experiment_id}-{metric.num_process}-{metric.process_id}.arrow")
 
         cos_scores_top_k_values, cos_scores_top_k_idx, chunk_ids = metric.compute()
-        cos_scores_top_k_idx = (cos_scores_top_k_idx.T + chunk_ids * self.corpus_chunk_size).T
+        # cos_scores_top_k_idx = (cos_scores_top_k_idx.T + chunk_ids * self.corpus_chunk_size).T
 
         # sort similar docs for each query by cosine similarity and keep only top_k
         sorted_idx = np.argsort(cos_scores_top_k_values, axis=0)[::-1]
@@ -162,7 +162,12 @@ class DenseRetrievalParallelExactSearch:
         cos_scores_top_k_values_2 = joblib.load("cos_scores_top_k_values.pkl")
         cos_scores_top_k_idx_2 = joblib.load("cos_scores_top_k_idx.pkl")
 
-        torch.testing.assert_allclose(cos_scores_top_k_values, cos_scores_top_k_values_2, rtol=0, atol=0)
+        print("testing cos_scores_top_k_values")
+        torch.testing.assert_allclose(cos_scores_top_k_values, cos_scores_top_k_values_2)
+        print("testing cos_scores_top_k_idx")
+        torch.testing.assert_allclose(cos_scores_top_k_idx, cos_scores_top_k_idx_2)
+        print("HAHAHAH")
+        # torch.testing.assert_allclose(cos_scores_top_k_idx, cos_scores_top_k_idx_2, rtol=0, atol=0)
 
         logger.info("Formatting results...")
         # Load corpus ids in memory
@@ -188,6 +193,7 @@ class DenseRetrievalParallelExactSearch:
         DummyMetric.len_queries = len(self.query_embeddings)
         metric = DummyMetric(experiment_id=self.experiment_id, num_process=len(self.target_devices), process_id=process_id)
         metric.warmup()
+        # cos = torch.nn.CosineSimilarity(dim=1)
         with torch.no_grad():
             while True:
                 try:
@@ -199,10 +205,15 @@ class DenseRetrievalParallelExactSearch:
                     cos_scores = self.score_functions[self.score_function](self.query_embeddings.to(corpus_embeds.device), corpus_embeds).detach()
                     cos_scores[torch.isnan(cos_scores)] = -1
 
+                    # cos_scores = cos(self.query_embeddings.unsqueeze(-1).to(corpus_embeds.device), corpus_embeds.T.unsqueeze(0))
+                    # cos_scores[torch.isnan(cos_scores)] = -1
+
                     #Get top-k most similar sentences for each query
                     cos_scores_top_k_values, cos_scores_top_k_idx = torch.topk(cos_scores, min(self.top_k+1, len(cos_scores[1])), dim=1, largest=True, sorted=False)
                     cos_scores_top_k_values = cos_scores_top_k_values.T.unsqueeze(0).detach()
                     cos_scores_top_k_idx = cos_scores_top_k_idx.T.unsqueeze(0).detach()
+                    cos_scores_top_k_idx = cos_scores_top_k_idx + id * self.corpus_chunk_size
+
 
                     # Store results in an Apache Arrow table
                     metric.add_batch(cos_scores_top_k_values=cos_scores_top_k_values, cos_scores_top_k_idx=cos_scores_top_k_idx, batch_index=[id]*len(cos_scores_top_k_values))
@@ -214,11 +225,11 @@ class DenseRetrievalParallelExactSearch:
                     # joblib.dump(corpus_embeds, "corpus_embeds.pkl")
                     # joblib.dump(self.query_embeddings, "query_embeddings.pkl")
 
-                    cos_scores_top_k_idx_2 = joblib.load("cos_scores_top_k_idx.pkl")
-                    cos_scores_top_k_values_2 = joblib.load("cos_scores_top_k_values.pkl")
-                    cos_scores_2 = joblib.load("cos_scores.pkl")
-                    corpus_embeds_2 = joblib.load("corpus_embeds.pkl")
-                    query_embeddings_2 = joblib.load("query_embeddings.pkl")
+                    # cos_scores_top_k_idx_2 = joblib.load("cos_scores_top_k_idx.pkl")
+                    # cos_scores_top_k_values_2 = joblib.load("cos_scores_top_k_values.pkl")
+                    # cos_scores_2 = joblib.load("cos_scores.pkl")
+                    # corpus_embeds_2 = joblib.load("corpus_embeds.pkl")
+                    # query_embeddings_2 = joblib.load("query_embeddings.pkl")
 
                     # torch.testing.assert_allclose(corpus_embeds[0], corpus_embeds_2[0], rtol=0, atol=0)
                     # torch.testing.assert_allclose(query_embeddings_2[0], self.query_embeddings[0], rtol=0, atol=0)
